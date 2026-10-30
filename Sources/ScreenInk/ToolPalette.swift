@@ -18,7 +18,6 @@ final class ToolPalette: NSObject {
     private var toolButtons: [ToolKind: NSButton] = [:]
     private var swatchButtons: [NSButton] = []
     private let widthSlider = NSSlider(value: 4, minValue: 1, maxValue: 32, target: nil, action: nil)
-    private static let originKey = "PaletteOrigin"
 
     private static let symbols: [ToolKind: String] = [
         .pen: "pencil.tip", .highlighter: "highlighter", .line: "line.diagonal", .arrow: "arrow.up.right",
@@ -82,8 +81,6 @@ final class ToolPalette: NSObject {
             ToolKind.allCases.map { kind -> NSView in
                 let button = iconButton(Self.symbols[kind] ?? "questionmark", action: #selector(selectTool(_:)))
                 button.tag = ToolKind.allCases.firstIndex(of: kind)!
-                let key = toolState.shortcuts.key(for: .tool(kind)).map { " (\($0.uppercased()))" } ?? ""
-                button.toolTip = kind.title + key
                 toolButtons[kind] = button
                 return button
             }, columns: 2)
@@ -185,6 +182,8 @@ final class ToolPalette: NSObject {
             let selected = kind == toolState.tool
             button.layer?.backgroundColor = selected ? NSColor.controlAccentColor.withAlphaComponent(0.3).cgColor : nil
             button.contentTintColor = selected ? .controlAccentColor : .labelColor
+            let key = toolState.shortcuts.key(for: .tool(kind)).map { " (\($0.uppercased()))" } ?? ""
+            button.toolTip = kind.title + key
         }
         for (index, button) in swatchButtons.enumerated() {
             button.image = swatchImage(RGBA.palette[index], selected: index == toolState.colorIndex)
@@ -195,8 +194,7 @@ final class ToolPalette: NSObject {
     // MARK: Position
 
     private func savedOrigin(fitting size: NSSize) -> NSPoint? {
-        guard let string = UserDefaults.standard.string(forKey: Self.originKey) else { return nil }
-        let origin = NSPointFromString(string)
+        guard let origin = toolState.paletteOrigin else { return nil }
         let frame = NSRect(origin: origin, size: size)
         // Ignore a position on a display that's no longer attached.
         return NSScreen.screens.contains { $0.visibleFrame.contains(frame) } ? origin : nil
@@ -208,7 +206,7 @@ final class ToolPalette: NSObject {
     }
 
     @objc private func panelDidMove() {
-        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: Self.originKey)
+        toolState.paletteOrigin = panel.frame.origin
     }
 
     // MARK: Actions

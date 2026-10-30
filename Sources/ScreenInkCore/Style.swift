@@ -30,6 +30,9 @@ public struct RGBA: Codable, Hashable, Sendable {
 
     /// The swatches on the palette, bound to keys 1–9.
     public static let palette: [RGBA] = [.red, .orange, .yellow, .green, .blue, .purple, .pink, .white, .black]
+
+    /// The names the config file uses for `palette`, in the same order.
+    public static let paletteNames = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "black"]
 }
 
 public enum Blend: String, Codable, Hashable, Sendable {

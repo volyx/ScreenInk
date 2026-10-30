@@ -10,6 +10,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
     let toolState: ToolState
     /// Asked to hide the overlay (Esc with nothing selected).
     var onDeactivateRequest: (() -> Void)?
+    /// Set during a quick-draw session: called for a click without a drag while a drag-drawn tool is current.
+    var onPlainClick: (() -> Void)?
 
     let dimView: DimView
     let annotationsView: AnnotationsView
@@ -24,6 +26,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
         didSet { updateSelectionIndicator() }
     }
     private var dragOffset: CGVector?
+    private var clickDetector: ClickDetector?
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -78,10 +81,16 @@ final class CanvasView: NSView, NSTextViewDelegate {
         dimView.setLevel(toolState.dimLevel, animated: true)
         guard toolState.tool != toolKind else { return }
         tool.cancel(in: self)
+        clickDetector = nil
         endTextEditing()
         toolKind = toolState.tool
         tool = makeTool(toolKind)
         if toolKind != .select { selection = [] }
+        refreshCursor()
+    }
+
+    /// Shows the tool's cursor if the pointer is over this canvas.
+    func refreshCursor() {
         if window?.isVisible == true, let window,
             bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
         {
@@ -230,15 +239,37 @@ final class CanvasView: NSView, NSTextViewDelegate {
             endTextEditing()
         }
         window?.makeFirstResponder(isEditingText ? textEditor?.view : self)
-        tool.mouseDown(input(from: event), in: self)
+        pointerDown(input(from: event))
     }
 
     override func mouseDragged(with event: NSEvent) {
-        tool.mouseDragged(input(from: event), in: self)
+        pointerDragged(input(from: event))
     }
 
     override func mouseUp(with event: NSEvent) {
-        tool.mouseUp(input(from: event), in: self)
+        pointerUp(input(from: event))
+    }
+
+    private func pointerDown(_ input: PointerInput) {
+        clickDetector = onPlainClick != nil && toolKind.isDragDrawn ? ClickDetector(start: input.point) : nil
+        tool.mouseDown(input, in: self)
+    }
+
+    private func pointerDragged(_ input: PointerInput) {
+        clickDetector?.move(to: input.point)
+        tool.mouseDragged(input, in: self)
+    }
+
+    private func pointerUp(_ input: PointerInput) {
+        clickDetector?.move(to: input.point)
+        let isPlainClick = clickDetector?.isClick == true
+        clickDetector = nil
+        if isPlainClick {
+            tool.cancel(in: self)
+            onPlainClick?()
+        } else {
+            tool.mouseUp(input, in: self)
+        }
     }
 
     private func input(from event: NSEvent) -> PointerInput {
@@ -255,10 +286,10 @@ final class CanvasView: NSView, NSTextViewDelegate {
         func sample(_ point: CGPoint) -> PointerInput {
             PointerInput(point: point, shift: shift, option: option, clickCount: clickCount)
         }
-        tool.mouseDown(sample(first), in: self)
-        for point in points.dropFirst().dropLast() { tool.mouseDragged(sample(point), in: self) }
-        if points.count > 1 { tool.mouseDragged(sample(last), in: self) }
-        tool.mouseUp(sample(last), in: self)
+        pointerDown(sample(first))
+        for point in points.dropFirst().dropLast() { pointerDragged(sample(point)) }
+        if points.count > 1 { pointerDragged(sample(last)) }
+        pointerUp(sample(last))
     }
 
     /// Mid-gesture access for the self-test.

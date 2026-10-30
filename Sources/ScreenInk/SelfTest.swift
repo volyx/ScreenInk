@@ -15,9 +15,7 @@ enum SelfTest {
     static func run(outputDirectory: URL) -> Bool {
         failures = []
         try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let defaults = UserDefaults(suiteName: "ScreenInkSelfTest")!
-        defaults.removePersistentDomain(forName: "ScreenInkSelfTest")
-        let toolState = ToolState(defaults: defaults)
+        let toolState = ToolState()
         let size = NSSize(width: 400, height: 300)
         let document = Document()
         let canvas = CanvasView(frame: NSRect(origin: .zero, size: size), document: document, toolState: toolState)
@@ -130,10 +128,152 @@ enum SelfTest {
         toolState.dimLevel = 0
         check(alpha(canvas.snapshot(), at: empty, viewSize: size) == 0, "dimming didn't turn off")
 
+        // 8. Quick draw: a click without a drag asks to exit and leaves nothing; drags still draw.
+        let quickDocument = Document()
+        let quick = CanvasView(frame: NSRect(origin: .zero, size: size), document: quickDocument, toolState: toolState)
+        var plainClicks = 0
+        quick.onPlainClick = { plainClicks += 1 }
+        for kind in [ToolKind.pen, .rectangle] {
+            toolState.tool = kind
+            plainClicks = 0
+            quick.simulateGesture([CGPoint(x: 100, y: 100)])
+            quick.simulateGesture([CGPoint(x: 100, y: 100), CGPoint(x: 102, y: 101)])
+            check(plainClicks == 2, "\(kind) clicks fired the handler \(plainClicks) times")
+            check(quickDocument.annotations.isEmpty, "\(kind) click left an annotation")
+            check(inkFraction(quick.snapshot()) == 0, "\(kind) click left ink behind")
+            plainClicks = 0
+            quick.simulateGesture([CGPoint(x: 50, y: 50), CGPoint(x: 100, y: 80), CGPoint(x: 150, y: 120)])
+            check(plainClicks == 0, "\(kind) drag counted as a click")
+            check(quickDocument.annotations.count == 1, "\(kind) drag didn't draw")
+            quick.simulateGesture([CGPoint(x: 50, y: 50), CGPoint(x: 90, y: 90), CGPoint(x: 50, y: 50)])
+            check(plainClicks == 0, "\(kind) drag back to its start counted as a click")
+            quickDocument.removeAll()
+        }
+        toolState.tool = .badge
+        plainClicks = 0
+        quick.simulateGesture([CGPoint(x: 100, y: 100)])
+        check(plainClicks == 0, "a badge click counted as a plain click")
+        check(quickDocument.annotations.map(\.kind) == [.badge], "a badge click didn't place a badge")
+
+        checkConfigFile(in: outputDirectory)
+
         print("self-test: live/committed pixel difference \(String(format: "%.4f%%", difference * 100))")
         for failure in failures { print("FAIL: \(failure)") }
         print(failures.isEmpty ? "self-test: PASS" : "self-test: FAIL")
         return failures.isEmpty
+    }
+
+    /// 9. The config file: created on first run, edits reach the app, and a bad file is never overwritten.
+    private static func checkConfigFile(in outputDirectory: URL) {
+        let url = outputDirectory.appendingPathComponent("config-test/config.yml")
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+        // The template a new install gets, to read alongside the PNGs.
+        try? Settings().yaml.write(
+            to: outputDirectory.appendingPathComponent("config-sample.yml"), atomically: true, encoding: .utf8)
+        func onDisk() -> String { (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
+        func replace(_ text: String) { try? text.write(to: url, atomically: true, encoding: .utf8) }
+        /// Runs the main queue until `condition` holds, as the app's event loop would.
+        func wait(for condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(3)
+            while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            return condition()
+        }
+
+        var initial = Settings()
+        initial.width = 6
+        let config = ConfigFile(url: url)
+        let loaded = config.load(initial: initial)
+        check(loaded == initial, "first run didn't use the initial settings")
+        check(onDisk() == initial.yaml, "first run didn't create the file")
+
+        var received: Settings?
+        var problems: [String] = []
+        config.onExternalChange = { received = $0 }
+        config.onProblem = { problems.append($0) }
+
+        // An atomic save, as most editors do it.
+        replace("# my note\nwidth: 12\n")
+        check(wait { received?.width == 12 }, "an atomic edit wasn't picked up")
+
+        // An in-place write to the same file, as shells and some editors do it.
+        received = nil
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data("dim_level: 0.5\n".utf8))
+            try? handle.close()
+        }
+        check(wait { received?.dimLevel == 0.5 }, "an in-place edit wasn't picked up")
+
+        // Saving the settings the file already holds keeps the file, and its comments, as they are.
+        let commented = onDisk()
+        config.save(received ?? Settings())
+        config.flush()
+        check(onDisk() == commented, "an unchanged save rewrote the file")
+
+        // A real change is written out.
+        var changed = received ?? Settings()
+        changed.width = 3
+        config.save(changed)
+        config.flush()
+        check((try? Settings(yaml: onDisk())) == changed, "an in-app change wasn't saved")
+
+        // A broken file is reported once, keeps its contents, and isn't overwritten by in-app changes.
+        let broken = "width: wide\n"
+        replace(broken)
+        check(wait { !problems.isEmpty }, "a broken file wasn't reported")
+        check(config.problem?.contains("Line 1") == true, "the problem didn't name its line: \(config.problem ?? "none")")
+        changed.width = 4
+        config.save(changed)
+        config.flush()
+        check(onDisk() == broken, "an in-app change overwrote a broken file")
+        check(problems.count == 1, "the problem was reported \(problems.count) times")
+
+        // Fixing the file clears the problem and applies it.
+        received = nil
+        replace("width: 9\n")
+        check(wait { received?.width == 9 }, "the fixed file wasn't picked up")
+        check(config.problem == nil, "the problem outlived its fix")
+
+        // An edit that hasn't been noticed yet beats a pending in-app change.
+        replace("width: 20\n")
+        changed.width = 5
+        config.save(changed)
+        config.flush()
+        check(onDisk() == "width: 20\n", "an in-app change overwrote an unseen edit")
+
+        // ToolState saves app changes, but not settings that came from the file.
+        let state = ToolState(settings: initial)
+        var saves = 0
+        state.onSettingsChange = { _ in saves += 1 }
+        var observed = 0
+        state.observe { observed += 1 }
+        var fromFile = initial
+        fromFile.width = 16
+        fromFile.colorIndex = 3
+        state.apply(fromFile)
+        check(saves == 0, "applying the file's settings saved them back")
+        check(observed == 1, "applying settings notified observers \(observed) times")
+        check(state.settings == fromFile, "ToolState didn't take on the file's settings")
+        state.width = 8
+        check(saves == 1, "an in-app change wasn't saved")
+
+        // Earlier versions' settings carry over.
+        let defaults = UserDefaults(suiteName: "ScreenInkSelfTest")!
+        defaults.removePersistentDomain(forName: "ScreenInkSelfTest")
+        defaults.set("rectangle", forKey: "Tool")
+        defaults.set(2, forKey: "ColorIndex")
+        defaults.set(3.0, forKey: "AutoFadeSeconds")
+        defaults.set("0.5", forKey: "DimLevel")
+        defaults.set(true, forKey: "SideButtonsEnabled")
+        defaults.set("{1775, 274}", forKey: "PaletteOrigin")
+        let legacy = Settings.legacy(from: defaults)
+        defaults.removePersistentDomain(forName: "ScreenInkSelfTest")
+        check(
+            legacy.tool == .rectangle && legacy.colorIndex == 2 && legacy.autoFadeSeconds == 3 && legacy.dimLevel == 0.5
+                && legacy.sideButtonsEnabled && legacy.width == 4,
+            "legacy settings didn't carry over: \(legacy)")
+        check(legacy.paletteOrigin == CGPoint(x: 1775, y: 274), "legacy palette position was \(String(describing: legacy.paletteOrigin))")
+        check((try? Settings(yaml: legacy.yaml)) == legacy, "migrated settings don't survive the file")
     }
 
     private static func save(_ image: CGImage, _ name: String, in directory: URL) {
