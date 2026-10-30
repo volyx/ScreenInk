@@ -10,9 +10,7 @@ enum Screenshots {
 
     static func run(outputDirectory: URL) -> Bool {
         try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let defaults = UserDefaults(suiteName: "ScreenInkScreenshots")!
-        defaults.removePersistentDomain(forName: "ScreenInkScreenshots")
-        let toolState = ToolState(defaults: defaults)
+        let toolState = ToolState()
         let canvas = CanvasView(frame: NSRect(origin: .zero, size: size), document: Document(), toolState: toolState)
         annotate(canvas, toolState: toolState)
         toolState.tool = .pen

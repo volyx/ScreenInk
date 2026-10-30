@@ -22,6 +22,8 @@ final class ScreensController {
     private var documents: [CGDirectDisplayID: Document] = [:]
     private let palette: ToolPalette
     private var screenObserver: NSObjectProtocol?
+    /// Set during a quick-draw session: the tool to go back to when it ends.
+    private var toolBeforeQuickDraw: ToolKind?
 
     init(toolState: ToolState) {
         self.toolState = toolState
@@ -44,7 +46,7 @@ final class ScreensController {
 
     /// Shows the overlays and makes the one under the pointer key, without activating the
     /// app, so the presenter's app keeps its menu bar and focus state.
-    func activate() {
+    func activate(showsPalette: Bool = true) {
         for overlay in overlays.values {
             overlay.panel.ignoresMouseEvents = false
             overlay.panel.orderFrontRegardless()
@@ -52,7 +54,7 @@ final class ScreensController {
         if let overlay = overlayUnderPointer() {
             overlay.panel.makeKey()
             overlay.panel.makeFirstResponder(overlay.canvas)
-            if let screen = overlay.panel.screen { palette.show(on: screen) }
+            if showsPalette, let screen = overlay.panel.screen { palette.show(on: screen) }
         }
         isActive = true
     }
@@ -65,6 +67,33 @@ final class ScreensController {
         }
         palette.hide()
         isActive = false
+        if let tool = toolBeforeQuickDraw {
+            toolBeforeQuickDraw = nil
+            updatePlainClickHandlers()
+            toolState.tool = tool
+        }
+    }
+
+    /// A mouse side button: starts a quick-draw session, in which a plain click erases everything
+    /// and stops. During a hotkey session it only switches tool, so a click there never wipes the drawing.
+    func quickDraw(with tool: ToolKind) {
+        if !isActive {
+            toolBeforeQuickDraw = toolState.tool
+            activate(showsPalette: false)
+            updatePlainClickHandlers()
+        }
+        toolState.tool = tool
+        activeCanvas?.refreshCursor()
+    }
+
+    private func clearAndDeactivate() {
+        for document in documents.values { document.removeAll() }
+        deactivate()
+    }
+
+    private func updatePlainClickHandlers() {
+        let handler: (() -> Void)? = toolBeforeQuickDraw == nil ? nil : { [weak self] in self?.clearAndDeactivate() }
+        for overlay in overlays.values { overlay.canvas.onPlainClick = handler }
     }
 
     func clearAll() {
@@ -123,6 +152,7 @@ final class ScreensController {
                 panel.orderFrontRegardless()
             }
         }
+        updatePlainClickHandlers()
     }
 }
 

@@ -7,16 +7,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let screens: ScreensController
     private let toolState: ToolState
-    private let hotKeyDescription: String?
+    private let sideButtons: SideButtonsController
+    private let config: ConfigFile
+    var hotKeyDescription: String?
     private static let fadeChoices: [Double?] = [nil, 3, 5, 10, 30]
     private static let dimChoices: [(title: String, level: Double)] = [
         ("Off", 0), ("Slightly", 0.2), ("Medium", 0.35), ("Strongly", 0.5),
     ]
 
-    init(screens: ScreensController, toolState: ToolState, hotKeyDescription: String?) {
+    init(screens: ScreensController, toolState: ToolState, sideButtons: SideButtonsController, config: ConfigFile) {
         self.screens = screens
         self.toolState = toolState
-        self.hotKeyDescription = hotKeyDescription
+        self.sideButtons = sideButtons
+        self.config = config
         super.init()
         let menu = NSMenu()
         menu.delegate = self
@@ -63,6 +66,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(dim)
 
         menu.addItem(.separator())
+        var sideButtonsTitle = "Draw with Mouse Side Buttons"
+        if sideButtons.isWaitingForPermission { sideButtonsTitle += " (waiting for Accessibility…)" }
+        let sideButtonsItem = item(sideButtonsTitle, #selector(toggleSideButtons))
+        sideButtonsItem.state = sideButtons.isEnabled ? .on : .off
+        menu.addItem(sideButtonsItem)
+        if sideButtons.isWaitingForPermission {
+            menu.addItem(item("Open Accessibility Settings…", #selector(openAccessibilitySettings)))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(item("Open Config File…", #selector(openConfigFile)))
+        if let problem = config.problem {
+            let notice = NSMenuItem(title: "⚠︎ config.yml: \(problem)", action: nil, keyEquivalent: "")
+            notice.isEnabled = false
+            menu.addItem(notice)
+        }
         let login = item("Launch at Login", #selector(toggleLaunchAtLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
@@ -91,6 +110,25 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func chooseDim(_ sender: NSMenuItem) {
         toolState.dimLevel = Self.dimChoices[sender.tag].level
+    }
+
+    @objc private func toggleSideButtons() {
+        sideButtons.setEnabled(!sideButtons.isEnabled)
+    }
+
+    @objc private func openAccessibilitySettings() {
+        sideButtons.openAccessibilitySettings()
+    }
+
+    /// Falls back to TextEdit, since nothing on a stock Mac claims `.yml` files.
+    @objc private func openConfigFile() {
+        config.flush()
+        let workspace = NSWorkspace.shared
+        guard
+            let editor = workspace.urlForApplication(toOpen: config.url)
+                ?? workspace.urlForApplication(withBundleIdentifier: "com.apple.TextEdit")
+        else { return }
+        workspace.open([config.url], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration())
     }
 
     @objc private func toggleLaunchAtLogin() {

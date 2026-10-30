@@ -1,7 +1,8 @@
 import Foundation
 import ScreenInkCore
 
-/// Current tool, color and width, shared by every screen and the palette. Persisted.
+/// Current tool, color, width and other options, shared by every screen and the palette.
+/// Persisted through `onSettingsChange` to the config file.
 @MainActor
 final class ToolState {
     var tool: ToolKind {
@@ -21,20 +22,73 @@ final class ToolState {
     var dimLevel: Double {
         didSet { changed() }
     }
-    var shortcuts = ShortcutMap.defaults
+    /// The global hotkey that starts and stops drawing.
+    var hotKey: HotKeySpec {
+        didSet { changed() }
+    }
+    /// Whether the mouse's side buttons start drawing. Needs Accessibility, so it's off until asked for.
+    var sideButtonsEnabled: Bool {
+        didSet { changed() }
+    }
+    var shortcuts: ShortcutMap {
+        didSet { changed() }
+    }
+    var mouseButtons: MouseButtonMap {
+        didSet { changed() }
+    }
+    /// Where the palette was left. Only saved: nothing on screen depends on it until the palette next opens.
+    var paletteOrigin: CGPoint? {
+        didSet { if !isApplying { onSettingsChange?(settings) } }
+    }
+    /// Called with the new settings after a change made in the app.
+    var onSettingsChange: ((Settings) -> Void)?
 
     private var observers: [() -> Void] = []
-    private let defaults: UserDefaults
+    private var isApplying = false
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        tool = defaults.string(forKey: Keys.tool).flatMap(ToolKind.init(rawValue:)) ?? .pen
-        colorIndex = min(max(defaults.integer(forKey: Keys.color), 0), RGBA.palette.count - 1)
-        let storedWidth = defaults.double(forKey: Keys.width)
-        width = storedWidth > 0 ? storedWidth : 4
-        let fade = defaults.double(forKey: Keys.autoFade)
-        autoFadeSeconds = fade > 0 ? fade : nil
-        dimLevel = min(max(defaults.double(forKey: Keys.dim), 0), 0.8)
+    init(settings: Settings = Settings()) {
+        tool = settings.tool
+        colorIndex = settings.colorIndex
+        width = settings.width
+        autoFadeSeconds = settings.autoFadeSeconds
+        dimLevel = settings.dimLevel
+        hotKey = settings.hotKey
+        sideButtonsEnabled = settings.sideButtonsEnabled
+        shortcuts = settings.shortcuts
+        mouseButtons = settings.mouseButtons
+        paletteOrigin = settings.paletteOrigin
+    }
+
+    var settings: Settings {
+        var settings = Settings()
+        settings.tool = tool
+        settings.colorIndex = colorIndex
+        settings.width = width
+        settings.autoFadeSeconds = autoFadeSeconds
+        settings.dimLevel = dimLevel
+        settings.hotKey = hotKey
+        settings.sideButtonsEnabled = sideButtonsEnabled
+        settings.shortcuts = shortcuts
+        settings.mouseButtons = mouseButtons
+        settings.paletteOrigin = paletteOrigin
+        return settings
+    }
+
+    /// Takes on settings read from the config file, updating observers once and saving nothing.
+    func apply(_ settings: Settings) {
+        isApplying = true
+        tool = settings.tool
+        colorIndex = settings.colorIndex
+        width = settings.width
+        autoFadeSeconds = settings.autoFadeSeconds
+        dimLevel = settings.dimLevel
+        hotKey = settings.hotKey
+        sideButtonsEnabled = settings.sideButtonsEnabled
+        shortcuts = settings.shortcuts
+        mouseButtons = settings.mouseButtons
+        paletteOrigin = settings.paletteOrigin
+        isApplying = false
+        observers.forEach { $0() }
     }
 
     var color: RGBA { RGBA.palette[colorIndex] }
@@ -58,19 +112,8 @@ final class ToolState {
     }
 
     private func changed() {
-        defaults.set(tool.rawValue, forKey: Keys.tool)
-        defaults.set(colorIndex, forKey: Keys.color)
-        defaults.set(width, forKey: Keys.width)
-        defaults.set(autoFadeSeconds ?? 0, forKey: Keys.autoFade)
-        defaults.set(dimLevel, forKey: Keys.dim)
+        guard !isApplying else { return }
+        onSettingsChange?(settings)
         observers.forEach { $0() }
-    }
-
-    private enum Keys {
-        static let tool = "Tool"
-        static let color = "ColorIndex"
-        static let width = "Width"
-        static let autoFade = "AutoFadeSeconds"
-        static let dim = "DimLevel"
     }
 }
