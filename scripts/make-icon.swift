@@ -19,25 +19,35 @@ func mix(_ a: UInt32, _ b: UInt32, _ t: CGFloat) -> CGColor {
     return CGColor(srgbRed: channel(16), green: channel(8), blue: channel(0), alpha: 1)
 }
 
-/// Point on a cubic Bézier.
-func bezier(_ p0: CGPoint, _ p1: CGPoint, _ p2: CGPoint, _ p3: CGPoint, _ t: CGFloat) -> CGPoint {
-    let u = 1 - t
-    let a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t
-    return CGPoint(x: a * p0.x + b * p1.x + c * p2.x + d * p3.x, y: a * p0.y + b * p1.y + c * p2.y + d * p3.y)
-}
-
 let inkStart: UInt32 = 0xFF4D5E
 let inkEnd: UInt32 = 0xFFB020
 
-/// Draws the icon into `context`, in 1024-pt top-left coordinates.
-func drawIcon(_ context: CGContext) {
+/// A rounded bar of slide content.
+func fillBar(_ context: CGContext, _ rect: CGRect, _ fill: CGColor) {
+    let radius = min(rect.width, rect.height) / 2
+    context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+    context.setFillColor(fill)
+    context.fillPath()
+}
+
+/// Draws the icon into `context`, in 1024-pt top-left coordinates: the tile is the screen, with a
+/// chart on a slide circled in ink. Below 64 pixels the fine detail is left out and the ink thickened.
+func drawIcon(_ context: CGContext, pixels: Int) {
+    let isSmall = pixels < 64
+    // Shadows ignore the context's transform, so they need scaling and flipping by hand.
+    let scale = CGFloat(pixels) / 1024
+    func setShadow(drop: CGFloat, blur: CGFloat, alpha: CGFloat) {
+        context.setShadow(
+            offset: CGSize(width: 0, height: -drop * scale), blur: blur * scale, color: color(0x000000, alpha))
+    }
+
     // Squircle-ish tile with a soft drop shadow.
     let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
     let tilePath = CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil)
     context.saveGState()
-    context.setShadow(offset: CGSize(width: 0, height: 10), blur: 24, color: color(0x000000, 0.35))
+    setShadow(drop: 10, blur: 24, alpha: 0.35)
     context.addPath(tilePath)
-    context.setFillColor(color(0x2B3FB0))
+    context.setFillColor(color(0x232C7A))
     context.fillPath()
     context.restoreGState()
 
@@ -45,52 +55,47 @@ func drawIcon(_ context: CGContext) {
     context.addPath(tilePath)
     context.clip()
     let background = CGGradient(
-        colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [color(0x5C7CFA), color(0x1C2775)] as CFArray,
+        colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [color(0x4A5FE8), color(0x161C5C)] as CFArray,
         locations: [0, 1])!
     context.drawLinearGradient(
         background, start: CGPoint(x: 512, y: 100), end: CGPoint(x: 512, y: 924), options: [])
 
-    // The display being drawn on.
-    let screen = CGRect(x: 196, y: 262, width: 632, height: 410)
-    let screenPath = CGPath(roundedRect: screen, cornerWidth: 40, cornerHeight: 40, transform: nil)
-    context.addPath(screenPath)
-    context.setFillColor(color(0xFFFFFF, 0.12))
-    context.fillPath()
-    context.addPath(screenPath)
-    context.setStrokeColor(color(0xFFFFFF, 0.55))
-    context.setLineWidth(14)
-    context.strokePath()
-    // Stand.
-    let stand = CGMutablePath()
-    stand.addRect(CGRect(x: 482, y: 679, width: 60, height: 66))
-    stand.addRoundedRect(in: CGRect(x: 392, y: 742, width: 240, height: 22), cornerWidth: 11, cornerHeight: 11)
-    context.addPath(stand)
-    context.setFillColor(color(0xFFFFFF, 0.55))
-    context.fillPath()  // one fill, so the overlap doesn't double up
+    // The slide: a chart to circle, with faint lines of text above and below it.
+    if !isSmall {
+        fillBar(context, CGRect(x: 250, y: 212, width: 400, height: 34), color(0xFFFFFF, 0.28))
+        fillBar(context, CGRect(x: 250, y: 764, width: 524, height: 34), color(0xFFFFFF, 0.28))
+        fillBar(context, CGRect(x: 250, y: 832, width: 330, height: 34), color(0xFFFFFF, 0.28))
+    }
+    let barWidth: CGFloat = isSmall ? 74 : 58
+    for (index, height) in (isSmall ? [80, 135, 190] : [76, 128, 180] as [CGFloat]).enumerated() {
+        let x = 512 + CGFloat(index - 1) * (barWidth + 22) - barWidth / 2
+        fillBar(context, CGRect(x: x, y: 590 - height, width: barWidth, height: height), color(0xFFFFFF, 0.95))
+    }
 
-    // Ink stroke: tapered, warm gradient along its length.
-    let p0 = CGPoint(x: 262, y: 560), p1 = CGPoint(x: 380, y: 380)
-    let p2 = CGPoint(x: 470, y: 640), p3 = CGPoint(x: 660, y: 392)
-    let steps = 400
+    // The ink: one hand-drawn loop that widens as it goes, so its end passes outside its start.
+    let steps = 720
+    var inkEndPoint = CGPoint.zero
     for i in 0...steps {
         let t = CGFloat(i) / CGFloat(steps)
-        let point = bezier(p0, p1, p2, p3, t)
-        let radius = 12 + 24 * sin(t * .pi)  // tapers to the nib's width at both ends
+        let angle = (-72 + 387 * t) * .pi / 180
+        let point = CGPoint(x: 512 + (262 + 56 * t) * cos(angle), y: 496 + (156 + 52 * t) * sin(angle))
+        let radius = (isSmall ? 24 : 7) + (isSmall ? 20 : 23) * sin(min(t * 1.6, 1) * .pi / 2)
         context.setFillColor(mix(inkStart, inkEnd, t))
         context.fillEllipse(in: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2))
+        inkEndPoint = point
     }
     context.restoreGState()
 
     // Pen, its tip at the end of the stroke, body up and to the right.
     context.saveGState()
-    context.translateBy(x: p3.x, y: p3.y)
+    context.translateBy(x: inkEndPoint.x, y: inkEndPoint.y)
     context.rotate(by: -.pi / 4)
-    context.setShadow(offset: CGSize(width: 0, height: 8), blur: 16, color: color(0x000000, 0.3))
+    setShadow(drop: 8, blur: 16, alpha: 0.3)
     let body = CGMutablePath()
     body.move(to: .zero)
     body.addLine(to: CGPoint(x: 78, y: -40))
-    body.addLine(to: CGPoint(x: 230, y: -40))
-    body.addArc(center: CGPoint(x: 230, y: 0), radius: 40, startAngle: -.pi / 2, endAngle: .pi / 2, clockwise: false)
+    body.addLine(to: CGPoint(x: 186, y: -40))
+    body.addArc(center: CGPoint(x: 186, y: 0), radius: 40, startAngle: -.pi / 2, endAngle: .pi / 2, clockwise: false)
     body.addLine(to: CGPoint(x: 78, y: 40))
     body.closeSubpath()
     context.addPath(body)
@@ -118,7 +123,7 @@ func render(pixels: Int) -> CGImage {
     let scale = CGFloat(pixels) / 1024
     context.translateBy(x: 0, y: CGFloat(pixels))
     context.scaleBy(x: scale, y: -scale)
-    drawIcon(context)
+    drawIcon(context, pixels: pixels)
     return context.makeImage()!
 }
 
